@@ -1,0 +1,26 @@
+ Submitting the new Regulated Pipeline Using the new CLI, I submitted the regulated_ci_pipeline.json template we created earlier:
+
+powershell
+
+
+$cliPath = "$env:TEMP\cargo-target\debug\cli.exe"
+& $cliPath submit examples\regulated_ci_pipeline.json
+Output:
+
+
+
+execution_id: ci-soc2-pipeline-001
+status: accepted
+dag_hash: sha256:dummy-hash-ci-soc2-pipeline-001
+3. Execution Log Verification The kernel successfully mapped the dependency graph and simulated execution across the nodes. Here is the resulting local audit.ndjson (using the free OSS stream):
+
+json
+
+
+{"event":"started","execution_id":"ci-soc2-pipeline-001","task_id":"lint_code","ts":1781855087796}
+{"event":"routed","execution_id":"ci-soc2-pipeline-001","routing_reason":"os_match: linux","selected_node":"linux-node-1","task_id":"run_unit_tests","ts":1781855087820}
+{"cmd":"echo 'Running cargo test'","execution_id":"ci-soc2-pipeline-001","latency_ms":0,"os":"linux","policy_decision":"allowed","result":"success","task_id":"run_unit_tests","ts":1781855087822}
+{"event":"completed","execution_id":"ci-soc2-pipeline-001","task_id":"run_unit_tests","ts":1781855087825}
+{"event":"routed","execution_id":"ci-soc2-pipeline-001","routing_reason":"os_match: linux","selected_node":"linux-node-1","task_id":"sast_scan","ts":1781855087827}
+{"event":"completed","execution_id":"ci-soc2-pipeline-001","task_id":"sast_scan","ts":1781855087832}
+...
