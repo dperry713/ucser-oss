@@ -1,0 +1,40 @@
+{
+  "dag_id": "phi-demo-001",
+  "actor_identity": "urn:ucser:actor:sysadmin-01",
+  "signature": "mock-ed25519-sig-8a9b...",
+  "tasks": [
+    {
+      "id": "validate_input",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'validating input dataset'",
+      "risk": "low"
+    },
+    {
+      "id": "policy_check",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'checking PHI policy'",
+      "risk": "high"
+    },
+    {
+      "id": "process_data",
+      "os": "windows",
+      "shell": "powershell",
+      "cmd": "Write-Output 'processing PHI dataset'",
+      "risk": "medium"
+    },
+    {
+      "id": "finalize_audit",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'finalizing audit trail'",
+      "risk": "low"
+    }
+  ],
+  "edges": [
+    ["validate_input", "policy_check"],
+    ["policy_check", "process_data"],
+    ["process_data", "finalize_audit"]
+  ]
+}

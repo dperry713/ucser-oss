@@ -1,0 +1,29 @@
+[package]
+name = "ucser-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+etcd-client = "0.12"
+axum = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tower-http = { version = "0.4", features = ["fs", "cors"] }
+regorus = "0.2"
+clap = { version = "4.4", features = ["derive"] }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+
+[features]
+default = []
+enterprise = ["sha2", "hex"]
+
+[[bin]]
+name = "ucser-kernel"
+path = "src/main.rs"
+
+[build-dependencies]
+tonic-build = "0.11"

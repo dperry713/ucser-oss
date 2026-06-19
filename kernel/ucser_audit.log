@@ -1,0 +1,5 @@
+{"ts": 1781836878975, "type": "SYSTEM_START", "details": "Control Plane booting"}
+{"ts": 1781836878986, "type": "DAG_LOADED", "details": "Loaded tasks into DAG"}
+{"ts": 1781836878992, "type": "TASK_DISPATCH", "details": "Dispatching task task_windows_1"}
+{"ts": 1781836879213, "type": "TASK_COMPLETE", "details": "Completed task task_windows_1"}
+{"ts": 1781836879216, "type": "SYSTEM_SHUTDOWN", "details": "Control Plane shutting down safely"}
