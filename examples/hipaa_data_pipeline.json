@@ -1,0 +1,38 @@
+{
+  "dag_id": "hipaa-phi-pipeline-001",
+  "tasks": [
+    {
+      "id": "fetch_phi_data",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Fetching PHI dataset from encrypted storage'",
+      "risk": "high"
+    },
+    {
+      "id": "anonymize_phi",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Scrubbing PII and SSNs from dataset'",
+      "risk": "high"
+    },
+    {
+      "id": "process_analytics",
+      "os": "windows",
+      "shell": "powershell",
+      "cmd": "Write-Output 'Running statistical analytics on anonymized data'",
+      "risk": "low"
+    },
+    {
+      "id": "generate_report",
+      "os": "windows",
+      "shell": "powershell",
+      "cmd": "Write-Output 'Generating final PDF report for board'",
+      "risk": "medium"
+    }
+  ],
+  "edges": [
+    ["fetch_phi_data", "anonymize_phi"],
+    ["anonymize_phi", "process_analytics"],
+    ["process_analytics", "generate_report"]
+  ]
+}

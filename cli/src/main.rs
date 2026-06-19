@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
 
+mod tui;
+
 #[derive(Parser)]
 #[command(name = "ucser-cli")]
 #[command(about = "UCSER Platform CLI", long_about = None)]
@@ -31,6 +33,10 @@ enum Commands {
         #[arg(help = "The execution ID to verify")]
         execution_id: String,
     },
+    /// View real-time system metrics and execution status
+    Dashboard,
+    /// View personalized insights and upgrade to Enterprise
+    Upgrade,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -149,6 +155,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             
             println!("✅ REPLAY SUCCESS: {} events cryptographically verified.", event_count);
+        }
+        Commands::Dashboard => {
+            println!("Launching UCSER Dashboard...");
+            tui::run_dashboard()?;
+        }
+        Commands::Upgrade => {
+            let audit_file = "logs/audit.ndjson";
+            let fallback_file = "audit.ndjson";
+            let mut dag_count = 0;
+            
+            if let Ok(file) = fs::File::open(audit_file).or_else(|_| fs::File::open(fallback_file)) {
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    if let Ok(l) = line {
+                        if l.contains("\"event\":\"execution\"") || l.contains("\"event\":\"completed\"") {
+                            dag_count += 1;
+                        }
+                    }
+                }
+            }
+            
+            println!("\n🚀 You have successfully processed {} task events with UCSER OSS!", dag_count);
+            println!("\nImagine securing these workloads with:");
+            println!("  ✅ WORM-compliant Cryptographic Ledgers");
+            println!("  ✅ Mathematical Replay Verification");
+            println!("  ✅ Signed Actor Identities & RBAC");
+            println!("  ✅ High-Availability Distributed Clustering");
+            println!("\n🛡️ Upgrade to UCSER Enterprise today:");
+            println!("   https://ucser.io/pricing?detected_dags={}", dag_count);
+            println!("\n   (Opening browser...)");
+            
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(&["/C", "start", &format!("https://ucser.io/pricing?detected_dags={}", dag_count)]).spawn();
+            
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(&format!("https://ucser.io/pricing?detected_dags={}", dag_count)).spawn();
+            
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&format!("https://ucser.io/pricing?detected_dags={}", dag_count)).spawn();
         }
     }
 

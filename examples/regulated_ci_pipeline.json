@@ -1,0 +1,38 @@
+{
+  "dag_id": "ci-soc2-pipeline-001",
+  "tasks": [
+    {
+      "id": "lint_code",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Running cargo clippy for code quality'",
+      "risk": "low"
+    },
+    {
+      "id": "run_unit_tests",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Running cargo test'",
+      "risk": "low"
+    },
+    {
+      "id": "sast_scan",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Running static application security testing (SOC2 Requirement)'",
+      "risk": "high"
+    },
+    {
+      "id": "build_artifact",
+      "os": "linux",
+      "shell": "bash",
+      "cmd": "echo 'Building deployment artifact'",
+      "risk": "medium"
+    }
+  ],
+  "edges": [
+    ["lint_code", "run_unit_tests"],
+    ["run_unit_tests", "sast_scan"],
+    ["sast_scan", "build_artifact"]
+  ]
+}
