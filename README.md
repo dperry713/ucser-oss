@@ -1,212 +1,133 @@
-UCSER — Unified Cross-System Execution Runtime
+# UCSER — Unified Cross-System Execution Runtime
 
-Deterministic, auditable workflow orchestration across Linux and Windows systems.
+[![CI Status](https://img.shields.io/github/actions/workflow/status/dperry713/ucser-oss/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/dperry713/ucser-oss/actions)
+[![License](https://img.shields.io/github/license/dperry713/ucser-oss?label=License&style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/dperry713/ucser-oss?label=Version&style=flat-square)](https://github.com/dperry713/ucser-oss/releases)
 
-UCSER is a cross-platform execution engine that compiles structured workflows into deterministic DAGs, executes them across heterogeneous systems, and produces tamper-evident audit records.
+UCSER is a high-performance, distributed workflow execution engine built in Rust. It compiles structured workflows into Directed Acyclic Graphs (DAGs), validates them against strict policy-as-code guards (using OPA/Rego), executes them concurrently across mixed OS environments (Windows/Linux) via sandboxed gRPC adapters, and registers cryptographically chained, tamper-evident audit logs.
 
-Overview
+---
 
-UCSER solves a core problem in infrastructure and compliance:
+## 🏛️ System Architecture
 
-How do you execute workflows across systems in a way that is reproducible, secure, and auditable?
+UCSER employs a decoupled architecture separating the API edge layer, the event-driven scheduler, and the adapter execution nodes.
 
-This system provides:
+```mermaid
+graph TD
+    subgraph Clients
+        CLI[UCSER CLI / TUI Dashboard]
+    end
 
-Deterministic workflow execution (same input → same result)
-Cross-platform orchestration (Linux + Windows)
-Policy enforcement before execution
-Full execution trace logging
-Replayable audit records
-Core Concepts
-1. Workflow → DAG Compilation
+    subgraph Control Plane [UCSER Kernel]
+        API[Axum REST API]
+        Sched[Async Scheduler Loop]
+        DAG[petgraph DAG Engine]
+        Policy[OPA/Rego Engine]
+        Audit[Audit Logger]
+    end
 
-User-defined workflows are compiled into directed acyclic graphs (DAGs):
+    subgraph Adapters [Data Plane]
+        Win[Windows PowerShell Adapter]
+        Lin[Linux Bash Adapter]
+    end
 
-{
-  "workflow_id": "patch-check-001",
-  "nodes": [
-    {"id": "inventory", "type": "linux_cmd"},
-    {"id": "scan", "type": "security_check"},
-    {"id": "report", "type": "aggregate"}
-  ],
-  "edges": [
-    ["inventory", "scan"],
-    ["scan", "report"]
-  ]
-}
-2. Deterministic Execution Engine
-Each node executes with controlled inputs
-Execution order is strictly defined by DAG topology
-Results are normalized for reproducibility
-3. Cross-Platform Adapters
+    CLI -->|POST /api/dag| API
+    API -->|Validate DAG| Sched
+    Sched -->|Cycle/Dep Check| DAG
+    Sched -->|Policy Scan| Policy
+    Sched -->|Cryptographic Chaining| Audit
+    Sched -->|gRPC Dispatch :50051| Win
+    Sched -->|gRPC Dispatch :50052| Lin
+```
 
-UCSER executes workflows across systems via adapters:
+---
 
-Linux adapter (bash / system tools)
-Windows adapter (PowerShell / native APIs)
+## ⚡ Key Features
 
-Adapters provide a uniform execution interface across OS boundaries.
+| Feature | Description | Edition |
+| :--- | :--- | :--- |
+| **Event-Driven Scheduler** | Asynchronous execution scheduler using `tokio::select!` channels (no busy loops). | **OSS** (Default) |
+| **Concurrent Graph execution** | Parallel execution of independent DAG tasks using `petgraph` cycle validation. | **OSS** (Default) |
+| **OPA/Rego Policy Guards** | Evaluates tasks against security compliance standards (HIPAA/SOC2 templates) before running. | **OSS** (Default) |
+| **Cryptographic Chaining** | SHA-256 block-like hashing of lifecycle events (`audit.ndjson`) to ensure integrity. | **OSS** (Default) |
+| **Secure Sandbox Adapters** | gRPC servers with input sanitization, allowed command lists, and process isolation. | **OSS** (Default) |
+| **Replay Verification** | Re-computes and verifies the cryptographic audit chain to detect tampering. | **OSS** (Default) |
+| **TUI Dashboard** | Terminal user interface for live tracking of workloads and latencies. | **OSS** (Default) |
+| **Leader Election & etcd** | Distributed clustering, task routing, node discovery, and High-Availability. | **OSS** (Default) |
+| *WORM Ledger Storage* | Write-Once-Read-Many hardware-backed audit integration. | *Enterprise Add-on* |
+| *Enterprise RBAC & SSO* | Identity Provider integration (OIDC/SAML) for signed actor workloads. | *Enterprise Add-on* |
 
-4. Policy Enforcement Layer
+---
 
-Before execution, workflows are validated against policies:
+## 🛠️ Getting Started
 
-Access control (who can run what)
-Allowed command sets
-Execution constraints
-Logging requirements
-5. Audit & Replay System
+### 1. Prerequisites
+- **Rust**: Latest stable toolchain.
+- **Python**: Version 3.10+ for execution adapters.
+- **Protocol Buffers Compiler (`protoc`)**:
+  - **Windows**: Run the setup script `powershell -File install_protoc.ps1`.
+  - **Linux**: Run `sudo apt-get install protobuf-compiler`.
 
-Every execution produces a structured record:
+### 2. Local Setup
+Generate gRPC stubs and prepare Python virtual environments:
+```bash
+# Windows
+powershell -File install_python_deps.ps1
 
-{
-  "execution_id": "exec-001",
-  "status": "completed",
-  "steps": [
-    {"node": "inventory", "status": "ok"},
-    {"node": "scan", "status": "ok"},
-    {"node": "report", "status": "ok"}
-  ]
-}
+# Linux / MacOS
+python3 -m venv venv
+source venv/bin/activate
+pip install grpcio grpcio-tools
+python -m grpc_tools.protoc -I./proto --python_out=./adapters/linux --grpc_python_out=./adapters/linux ./proto/execution.proto
+```
 
-Executions can be:
+### 3. Run the System
 
-Replayed deterministically
-Verified for integrity
-Used for compliance audits
-Architecture
-5
-CLI / API
-   ↓
-Workflow Compiler
-   ↓
-DAG Scheduler
-   ↓
-Execution Engine
-   ↓
-Adapters (Linux / Windows)
-   ↓
-Audit Ledger
-Example Execution Flow
-Submit Workflow
-   ↓
-Validate Input
-   ↓
-Policy Check
-   ↓
-Compile DAG
-   ↓
-Execute Nodes
-   ↓
-Collect Results
-   ↓
-Generate Audit Record
-API
-Submit Workflow
-POST /workflows
-Execute Workflow
-POST /execute
-Execution Status
-GET /execution/{execution_id}
-Replay Execution
-POST /replay/{execution_id}
-AI-Assisted Workflow Generation (Optional)
+#### Start Adapters (Data Plane)
+```bash
+# Start PowerShell Adapter (port 50051)
+python adapters/windows/adapter.py
 
-UCSER can integrate with local LLMs such as llama.cpp or LM Studio to convert natural language into workflows.
+# Start Bash Adapter (port 50052)
+python adapters/linux/adapter.py
+```
 
-Example:
+#### Start Kernel (Control Plane)
+```bash
+# Compile and run kernel in cluster mode
+cargo run --bin ucser-kernel
 
-Input:
+# Run in single-node simulation mode (no adapters required)
+cargo run --bin ucser-kernel -- --single-node
+```
 
-"Run a security scan on all Linux servers and generate a report"
+#### Submit a Workload (CLI)
+Submit reference workload and check status:
+```bash
+# Submit DAG payload
+cargo run --bin cli submit examples/reference_workload/phi_pipeline.json
 
-Generated DAG:
+# Check execution trace
+cargo run --bin cli status phi-demo-001
 
-{
-  "nodes": ["inventory", "scan", "report"]
-}
+# View logs
+cargo run --bin cli audit phi-demo-001
 
-Execution remains deterministic — AI is only used for compilation, not runtime control.
+# Export compliance logs to CSV
+cargo run --bin cli export phi-demo-001 --format csv
 
-Tech Stack
-Backend: FastAPI
-Data: SQLite / DuckDB
-Graph: NetworkX or custom engine
-Runtime: Python + Rust components
-Adapters: Bash / PowerShell
-Serialization: Protobuf / JSON
-Key Features
-Deterministic DAG execution
-Cross-platform orchestration
-Policy-based execution control
-Replayable execution traces
-Audit-ready logs
-Extensible adapter system
-Roadmap
-Phase 1 (Current)
-DAG execution engine
-Basic adapters
-Execution tracking
-Phase 2
-Policy engine (SOC2 / HIPAA mapping)
-Structured audit export
-Phase 3
-Cryptographic execution signing
-Tamper-evident audit ledger
-Phase 4
-Distributed execution (multi-node)
-Agent-based execution model
-Why This Project Matters
+# Verify cryptographic log integrity
+cargo run --bin cli replay phi-demo-001
 
-Most workflow systems optimize for flexibility.
+# Launch TUI Dashboard
+cargo run --bin cli dashboard
+```
 
-UCSER optimizes for:
+---
 
-Determinism
-Auditability
-Security
-Compliance
+## 🤝 Contributing
 
-This makes it applicable to:
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) for details on our code style, lints (`clippy`), and tests formatting.
 
-Compliance automation (SOC2, HIPAA)
-Security operations
-Infrastructure orchestration
-Regulated environments
-Getting Started
-git clone https://github.com/dperry713/ucser-oss
-cd ucser-oss
-
-# Python environment
-python -m venv venv
-source venv/bin/activate  # or Windows equivalent
-
-pip install -r requirements.txt
-
-# Run API
-uvicorn app.main:app --reload
-Example Use Cases
-Run compliance checks across servers
-Execute secure automation workflows
-Generate audit logs for infrastructure changes
-Reproduce execution failures deterministically
-Resume Impact Statement
-
-This project demonstrates:
-
-Distributed systems design
-Workflow orchestration (DAG execution)
-Cross-platform runtime engineering
-Security and policy enforcement
-Audit and compliance architecture
-License
-
-MIT License
-
-Final Note
-
-This project is designed to model real-world infrastructure systems where reproducibility, traceability, and control are required.
-
-It is not a task runner.
-
-It is an execution system with audit guarantees.
+## 📄 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

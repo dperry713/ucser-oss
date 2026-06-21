@@ -13,7 +13,6 @@ use ratatui::{
 };
 
 pub fn run_dashboard() -> Result<(), Box<dyn std::error::Error>> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -22,7 +21,6 @@ pub fn run_dashboard() -> Result<(), Box<dyn std::error::Error>> {
 
     let res = run_app(&mut terminal);
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -63,21 +61,53 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
 
             let audit_data = read_audit_data();
             let mut rows = Vec::new();
-            for item in audit_data.iter().rev().take(15) { // Show last 15 items
-                let (task, status) = item;
-                rows.push(Row::new(vec![task.clone(), status.clone()]));
+            for item in audit_data.iter().rev().take(15) {
+                let (task, event, result, latency) = item;
+                
+                let status_style = match result.as_str() {
+                    "success" => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    "failure" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    "blocked" => Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    _ => match event.as_str() {
+                        "started" => Style::default().fg(Color::Yellow),
+                        "routed" => Style::default().fg(Color::Blue),
+                        _ => Style::default().fg(Color::White),
+                    }
+                };
+
+                let display_status = if result.is_empty() { 
+                    event.clone() 
+                } else { 
+                    format!("{} ({})", event, result) 
+                };
+
+                let latency_display = if latency == "0" && result == "blocked" {
+                    "N/A".to_string()
+                } else {
+                    format!("{} ms", latency)
+                };
+                
+                rows.push(Row::new(vec![
+                    ratatui::text::Span::raw(task.clone()),
+                    ratatui::text::Span::styled(display_status, status_style),
+                    ratatui::text::Span::raw(latency_display),
+                ]));
             }
 
-            let table = Table::new(rows, &[Constraint::Percentage(50), Constraint::Percentage(50)])
-                .header(
-                    Row::new(vec!["Task ID", "Event Status"])
-                        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                )
-                .block(Block::default().borders(Borders::ALL).title("Recent Execution Trace"));
+            let table = Table::new(rows, &[
+                Constraint::Percentage(40), 
+                Constraint::Percentage(40), 
+                Constraint::Percentage(20)
+            ])
+            .header(
+                Row::new(vec!["Task ID", "Status / Event", "Latency"])
+                    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            )
+            .block(Block::default().borders(Borders::ALL).title("Recent Execution Trace"));
             
             f.render_widget(table, chunks[1]);
 
-            let footer = Paragraph::new("Press 'q' to exit | Type `ucser-cli upgrade` to explore Enterprise Security.")
+            let footer = Paragraph::new("Press 'q' to exit | Type `ucser-cli replay` to verify or `ucser-cli export` to compliance export.")
                 .style(Style::default().fg(Color::DarkGray))
                 .block(Block::default().borders(Borders::ALL));
             f.render_widget(footer, chunks[2]);
@@ -93,7 +123,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     }
 }
 
-fn read_audit_data() -> Vec<(String, String)> {
+fn read_audit_data() -> Vec<(String, String, String, String)> {
     use std::io::BufRead;
     let mut data = Vec::new();
     let file_path = Path::new("audit.ndjson");
@@ -106,9 +136,14 @@ fn read_audit_data() -> Vec<(String, String)> {
         for line in reader.lines() {
             if let Ok(l) = line {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
-                    let task = json.get("task_id").and_then(|v| v.as_str()).unwrap_or("unknown_task").to_string();
-                    let event = json.get("event").and_then(|v| v.as_str()).unwrap_or("unknown_event").to_string();
-                    data.push((task, event));
+                    let task = json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if task.is_empty() {
+                        continue;
+                    }
+                    let event = json.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let result = json.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let latency = json.get("latency_ms").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
+                    data.push((task, event, result, latency));
                 }
             }
         }

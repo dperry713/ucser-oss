@@ -3,6 +3,8 @@ use axum::{
     Router,
     Json,
     extract::State,
+    response::IntoResponse,
+    http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
@@ -20,10 +22,8 @@ pub struct StatusResponse {
 #[derive(Deserialize)]
 pub struct DagRequest {
     pub dag_id: String,
-    #[cfg(feature = "enterprise")]
-    pub actor_identity: String,
-    #[cfg(feature = "enterprise")]
-    pub signature: String,
+    pub actor_identity: Option<String>,
+    pub signature: Option<String>,
     pub tasks: Vec<TaskRequest>,
     pub edges: Vec<Vec<String>>,
 }
@@ -76,10 +76,19 @@ async fn get_status() -> Json<StatusResponse> {
 async fn submit_dag(
     State(state): State<Arc<ApiState>>,
     Json(payload): Json<DagRequest>,
-) -> Json<DagResponse> {
+) -> impl IntoResponse {
+    let mut dependencies_map = std::collections::HashMap::<String, Vec<String>>::new();
+    for edge in &payload.edges {
+        if edge.len() == 2 {
+            let parent = &edge[0];
+            let child = &edge[1];
+            dependencies_map.entry(child.clone()).or_default().push(parent.clone());
+        }
+    }
+
     let mut tasks = Vec::new();
-    
     for tr in payload.tasks {
+        let deps = dependencies_map.get(&tr.id).cloned().unwrap_or_default();
         tasks.push(Task {
             execution_id: payload.dag_id.clone(),
             id: tr.id.clone(),
@@ -88,15 +97,33 @@ async fn submit_dag(
             command: tr.cmd.clone(),
             args: vec![],
             env_vars: std::collections::HashMap::new(),
-            dependencies: vec![], // Mocked edges for demo
+            dependencies: deps,
+            retries: 0,
+            max_retries: 3,
+            timeout_seconds: 30,
         });
+    }
+
+    // Validate the DAG for cycles/missing dependencies using DagEngine
+    let mut temp_dag = crate::dag::DagEngine::new();
+    for task in &tasks {
+        temp_dag.add_task(task.clone());
+    }
+    if let Err(e) = temp_dag.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ).into_response();
     }
 
     let _ = state.tx.send(tasks).await;
 
-    Json(DagResponse {
-        execution_id: payload.dag_id.clone(),
-        status: "accepted".to_string(),
-        dag_hash: format!("sha256:dummy-hash-{}", payload.dag_id),
-    })
+    (
+        StatusCode::OK,
+        Json(DagResponse {
+            execution_id: payload.dag_id.clone(),
+            status: "accepted".to_string(),
+            dag_hash: format!("sha256:dummy-hash-{}", payload.dag_id),
+        }),
+    ).into_response()
 }

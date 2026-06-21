@@ -28,7 +28,6 @@ enum Commands {
         id: String,
     },
     /// Cryptographically verify a past execution
-    #[cfg(feature = "enterprise")]
     Replay {
         #[arg(help = "The execution ID to verify")]
         execution_id: String,
@@ -37,6 +36,13 @@ enum Commands {
     Dashboard,
     /// View personalized insights and upgrade to Enterprise
     Upgrade,
+    /// Export execution audit logs in structured format (e.g. CSV)
+    Export {
+        #[arg(help = "The execution ID to export")]
+        id: String,
+        #[arg(long, default_value = "csv", help = "The format to export: csv")]
+        format: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -61,7 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let content = fs::read_to_string(file)?;
             let mut payload: serde_json::Value = serde_json::from_str(&content)?;
             
-            #[cfg(feature = "enterprise")]
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("actor_identity".to_string(), serde_json::json!("urn:ucser:actor:sysadmin-01"));
                 obj.insert("signature".to_string(), serde_json::json!("mock-signature-001"));
@@ -101,7 +106,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        #[cfg(feature = "enterprise")]
         Commands::Replay { execution_id: id } => {
             println!("Starting Replay Verification for execution: {}", id);
             let audit_file = "logs/audit.ndjson";
@@ -194,6 +198,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open").arg(&format!("https://ucser.io/pricing?detected_dags={}", dag_count)).spawn();
+        }
+        Commands::Export { id, format } => {
+            let audit_file = "logs/audit.ndjson";
+            let fallback_file = "audit.ndjson";
+            let file = fs::File::open(audit_file).or_else(|_| fs::File::open(fallback_file))?;
+            let reader = BufReader::new(file);
+
+            if format == "csv" {
+                println!("timestamp,execution_id,task_id,event,result,latency_ms");
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if obj.get("execution_id").and_then(|v| v.as_str()) == Some(id) {
+                                let ts = obj.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let exec_id = obj.get("execution_id").and_then(|v| v.as_str()).unwrap_or("");
+                                let task_id = obj.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+                                let event = obj.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                                let result = obj.get("result").and_then(|v| v.as_str()).unwrap_or("");
+                                let latency = obj.get("latency_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                                
+                                println!("{},{},{},{},{},{}", ts, exec_id, task_id, event, result, latency);
+                            }
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Unsupported export format: {}. Only 'csv' is supported currently.", format);
+                std::process::exit(1);
+            }
         }
     }
 

@@ -1,15 +1,16 @@
 package ucser.hipaa
 
-default allow = false
-
-allow {
-    not contains_violation
-}
-
-contains_violation {
+deny[msg] {
     input.cmd == "rm -rf"
+    msg := "disallowed_command: rm -rf"
 }
 
-contains_violation {
-    contains(input.cmd, "LD_PRELOAD")
+deny[msg] {
+    input.cmd == "rm"
+    msg := "disallowed_command: rm"
+}
+
+deny[msg] {
+    input.env_vars["LD_PRELOAD"]
+    msg := "restricted_env: LD_PRELOAD"
 }
