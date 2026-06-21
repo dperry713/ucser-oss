@@ -1,6 +1,7 @@
 use tonic::transport::Channel;
 use crate::execution::execution_adapter_client::ExecutionAdapterClient;
 use crate::execution::{CommandRequest, CommandResponse};
+use crate::error::UcserError;
 
 #[derive(Clone)]
 pub struct AdapterClient {
@@ -8,7 +9,7 @@ pub struct AdapterClient {
 }
 
 impl AdapterClient {
-    pub async fn connect(url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn connect(url: &str) -> Result<Self, UcserError> {
         let client = ExecutionAdapterClient::connect(url.to_string()).await?;
         Ok(Self { client })
     }
@@ -19,7 +20,7 @@ impl AdapterClient {
         command: String,
         args: Vec<String>,
         env_vars: std::collections::HashMap<String, String>,
-    ) -> Result<CommandResponse, Box<dyn std::error::Error>> {
+    ) -> Result<CommandResponse, UcserError> {
         let mut client_clone = self.client.clone();
         let request = tonic::Request::new(CommandRequest {
             execution_id,

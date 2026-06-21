@@ -4,6 +4,8 @@ pub mod policy;
 pub mod audit;
 pub mod client;
 pub mod api;
+pub mod error;
+pub mod traits;
 pub mod integration_tests;
 
 pub mod execution {

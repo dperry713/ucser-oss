@@ -3,6 +3,7 @@ mod tests {
     use crate::dag::Task;
     use crate::policy::{PolicyEngine, PolicyViolation};
     use crate::audit::AuditEngine;
+    use crate::traits::{PolicyBackend, AuditBackend};
     use std::collections::HashMap;
 
     #[test]
@@ -53,7 +54,7 @@ mod tests {
     #[test]
     fn test_audit_log_traceability() {
         let mut audit = AuditEngine::new("test_audit.log").unwrap();
-        audit.log_event("TEST_EVENT", "Simulated trace").unwrap();
+        audit.log_event("TEST_EVENT", serde_json::json!("Simulated trace")).unwrap();
         
         let contents = std::fs::read_to_string("test_audit.log").unwrap();
         assert!(contents.contains("TEST_EVENT"));

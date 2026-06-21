@@ -74,7 +74,7 @@ impl DagEngine {
 
         // Add dependency edges
         for (id, task) in &self.tasks {
-            let to_idx = *node_map.get(id).unwrap();
+            let to_idx = *node_map.get(id).ok_or_else(|| DagError::MissingDependency(id.clone(), id.clone()))?;
             for dep in &task.dependencies {
                 if let Some(from_idx) = node_map.get(dep) {
                     graph.add_edge(*from_idx, to_idx, ());

@@ -2,10 +2,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+use crate::error::UcserError;
+use crate::traits::AuditBackend;
 
 pub struct AuditEngine {
     log_file: File,
@@ -28,15 +29,17 @@ impl AuditEngine {
             execution_hashes: HashMap::new(),
         })
     }
+}
 
+impl AuditBackend for AuditEngine {
     /// Appends an event to the execution log.
-    pub fn log_event<T: Serialize>(&mut self, execution_id: &str, event: T) -> io::Result<()> {
+    fn log_event(&mut self, execution_id: &str, event: Value) -> Result<(), UcserError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
 
-        let mut v = serde_json::to_value(event).unwrap();
+        let mut v = event;
         
         let prev_hash = self.execution_hashes.get(execution_id)
             .cloned()
@@ -56,7 +59,7 @@ impl AuditEngine {
         }
 
         // Serialize the JSON specifically for hashing
-        let event_json = serde_json::to_string(&v).unwrap();
+        let event_json = serde_json::to_string(&v)?;
         
         let mut hasher = Sha256::new();
         hasher.update(event_json.as_bytes());
@@ -70,7 +73,7 @@ impl AuditEngine {
         self.execution_hashes.insert(execution_id.to_string(), hash_str);
 
         // Serialize to final NDJSON format
-        let mut log_entry = serde_json::to_string(&v).unwrap();
+        let mut log_entry = serde_json::to_string(&v)?;
         log_entry.push('\n');
         
         self.log_file.write_all(log_entry.as_bytes())?;
@@ -80,24 +83,23 @@ impl AuditEngine {
     }
 
     /// Exports compliance logs for a specific execution ID as CSV.
-    pub fn export_csv(&self, execution_id: &str) -> io::Result<String> {
+    fn export_csv(&self, execution_id: &str) -> Result<String, UcserError> {
         let file = File::open(&self.log_path)?;
         let reader = BufReader::new(file);
         let mut csv = String::new();
         csv.push_str("timestamp,execution_id,task_id,event,hash,prev_hash\n");
 
         for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(obj) = serde_json::from_str::<Value>(&line) {
-                    if obj.get("execution_id").and_then(|v| v.as_str()) == Some(execution_id) {
-                        let ts = obj.get("ts").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
-                        let task_id = obj.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let event = obj.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let hash = obj.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let prev_hash = obj.get("prev_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let line = line?;
+            if let Ok(obj) = serde_json::from_str::<Value>(&line) {
+                if obj.get("execution_id").and_then(|v| v.as_str()) == Some(execution_id) {
+                    let ts = obj.get("ts").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
+                    let task_id = obj.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let event = obj.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let hash = obj.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let prev_hash = obj.get("prev_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-                        csv.push_str(&format!("{},{},{},{},{},{}\n", ts, execution_id, task_id, event, hash, prev_hash));
-                    }
+                    csv.push_str(&format!("{},{},{},{},{},{}\n", ts, execution_id, task_id, event, hash, prev_hash));
                 }
             }
         }

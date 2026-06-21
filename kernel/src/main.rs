@@ -2,7 +2,10 @@ use ucser_kernel::dag::{DagEngine, Task};
 use ucser_kernel::policy::PolicyEngine;
 use ucser_kernel::audit::AuditEngine;
 use ucser_kernel::client::AdapterClient;
+use ucser_kernel::error::UcserError;
+use ucser_kernel::traits::{Executor, PolicyBackend, AuditBackend, ExecutionResult};
 use clap::Parser;
+use std::sync::Arc;
 
 #[derive(Parser)]
 struct Args {
@@ -21,8 +24,58 @@ enum SchedulerEvent {
     },
 }
 
+struct MockExecutor;
+
+#[async_trait::async_trait]
+impl Executor for MockExecutor {
+    async fn execute(&self, task: &Task) -> Result<ExecutionResult, UcserError> {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        Ok(ExecutionResult {
+            exit_code: 0,
+            stdout: format!("mock output for task {}", task.id),
+            stderr: String::new(),
+        })
+    }
+}
+
+struct GrpcExecutor {
+    win_client: Option<AdapterClient>,
+    linux_client: Option<AdapterClient>,
+}
+
+#[async_trait::async_trait]
+impl Executor for GrpcExecutor {
+    async fn execute(&self, task: &Task) -> Result<ExecutionResult, UcserError> {
+        let client = if task.os == "windows" {
+            &self.win_client
+        } else {
+            &self.linux_client
+        };
+
+        if let Some(c) = client {
+            let res = c.dispatch(
+                task.execution_id.clone(),
+                task.command.clone(),
+                task.args.clone(),
+                task.env_vars.clone(),
+            ).await?;
+            Ok(ExecutionResult {
+                exit_code: res.exit_code,
+                stdout: res.stdout,
+                stderr: res.stderr,
+            })
+        } else {
+            Ok(ExecutionResult {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: format!("No active adapter client connected for OS {}", task.os),
+            })
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), UcserError> {
     let args = Args::parse();
     
     if args.single_node {
@@ -60,6 +113,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         }
+    };
+
+    let executor: Arc<dyn Executor> = if args.single_node {
+        Arc::new(MockExecutor)
+    } else {
+        Arc::new(GrpcExecutor {
+            win_client,
+            linux_client,
+        })
     };
 
     // Distributed Mode: etcd coordination
@@ -158,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             dag.add_task(task);
                         }
-                        dispatch_ready_tasks(&mut dag, &event_tx, &win_client, &linux_client, args.single_node, &mut audit).await;
+                        dispatch_ready_tasks(&mut dag, &event_tx, executor.clone(), &mut audit).await;
                     }
                     SchedulerEvent::TaskFinished { task_id, exit_code, duration_ms, stdout, stderr } => {
                         let task = match dag.tasks.get(&task_id) {
@@ -204,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }));
                             }
                         }
-                        dispatch_ready_tasks(&mut dag, &event_tx, &win_client, &linux_client, args.single_node, &mut audit).await;
+                        dispatch_ready_tasks(&mut dag, &event_tx, executor.clone(), &mut audit).await;
                     }
                 }
             }
@@ -221,9 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn dispatch_ready_tasks(
     dag: &mut DagEngine,
     event_tx: &tokio::sync::mpsc::Sender<SchedulerEvent>,
-    win_client: &Option<AdapterClient>,
-    linux_client: &Option<AdapterClient>,
-    single_node: bool,
+    executor: Arc<dyn Executor>,
     audit: &mut AuditEngine,
 ) {
     let ready_tasks = dag.get_ready_tasks();
@@ -242,43 +302,19 @@ async fn dispatch_ready_tasks(
         
         println!("Dispatching task: {} to {}", task.id, selected_node);
         let task_id = task.id.clone();
-        let command = task.command.clone();
-        let args = task.args.clone();
-        let env_vars = task.env_vars.clone();
-        let os = task.os.clone();
-        
-        let win_client_clone = win_client.clone();
-        let linux_client_clone = linux_client.clone();
+        let executor_clone = executor.clone();
         let tx = event_tx.clone();
+        let task_clone = task.clone();
 
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let mut exit_code = 1;
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-
-            if single_node {
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                exit_code = 0;
-                stdout = format!("mock output for task {}", task_id);
-            } else {
-                let client = if os == "windows" { &win_client_clone } else { &linux_client_clone };
-                if let Some(c) = client {
-                    match c.dispatch(task_id.clone(), command, args, env_vars).await {
-                        Ok(res) => {
-                            exit_code = res.exit_code;
-                            stdout = res.stdout;
-                            stderr = res.stderr;
-                        }
-                        Err(e) => {
-                            eprintln!("gRPC dispatch error: {}", e);
-                            stderr = e.to_string();
-                        }
-                    }
-                } else {
-                    stderr = format!("No active adapter client connected for OS {}", os);
+            let (exit_code, stdout, stderr) = match executor_clone.execute(&task_clone).await {
+                Ok(res) => (res.exit_code, res.stdout, res.stderr),
+                Err(e) => {
+                    eprintln!("Execution error: {}", e);
+                    (1, String::new(), e.to_string())
                 }
-            }
+            };
 
             let duration_ms = start.elapsed().as_millis();
             let _ = tx.send(SchedulerEvent::TaskFinished {

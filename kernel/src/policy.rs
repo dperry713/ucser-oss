@@ -1,13 +1,18 @@
 use crate::dag::Task;
+use crate::traits::PolicyBackend;
 use regorus::{Engine, Value};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum PolicyViolation {
+    #[error("Disallowed command: {0}")]
     DisallowedCommand(String),
+    #[error("Restricted environment variable: {0}")]
     RestrictedEnvVar(String),
+    #[error("Rego evaluation error: {0}")]
     RegoEvaluationError(String),
 }
 
@@ -29,55 +34,6 @@ impl PolicyEngine {
             eprintln!("Warning: Failed to load policies: {:?}", e);
         }
         s
-    }
-
-    /// Hot-reloads all policy files in the policies directory.
-    pub fn reload(&mut self) -> Result<(), PolicyViolation> {
-        let mut engine = Engine::new();
-        let path = Path::new(&self.policy_dir);
-        
-        if path.exists() && path.is_dir() {
-            for entry in fs::read_dir(path).map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))? {
-                let entry = entry.map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
-                let file_path = entry.path();
-                if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("rego") {
-                    println!("Loading policy: {:?}", file_path);
-                    engine.add_policy_from_file(file_path.to_str().unwrap().to_string())
-                        .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
-                }
-            }
-        } else {
-            return Err(PolicyViolation::RegoEvaluationError(format!("Policy directory does not exist: {}", self.policy_dir)));
-        }
-        
-        self.engine = engine;
-        Ok(())
-    }
-
-    /// Validates a task against security policies using OPA/Rego.
-    pub fn validate_task(&mut self, task: &Task) -> Result<(), PolicyViolation> {
-        let input_json = json!({
-            "cmd": task.command,
-            "args": task.args,
-            "env_vars": task.env_vars,
-            "os": task.os,
-        });
-
-        let input_val = Value::from_json_str(&input_json.to_string())
-            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
-        self.engine.set_input(input_val);
-
-        // Evaluate deny rules for HIPAA
-        let hipaa_res = self.engine.eval_query("data.ucser.hipaa.deny".to_string(), false)
-            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
-        self.check_violations(hipaa_res, task)?;
-
-        // Evaluate deny rules for SOC2
-        let soc2_res = self.engine.eval_query("data.ucser.soc2.deny".to_string(), false)
-            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
-        self.check_violations(soc2_res, task)?;
-
-        Ok(())
     }
 
     fn check_violations(&self, res: regorus::QueryResults, task: &Task) -> Result<(), PolicyViolation> {
@@ -111,6 +67,61 @@ impl PolicyEngine {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+impl PolicyBackend for PolicyEngine {
+    /// Hot-reloads all policy files in the policies directory.
+    fn reload(&mut self) -> Result<(), PolicyViolation> {
+        let mut engine = Engine::new();
+        let path = Path::new(&self.policy_dir);
+        
+        if path.exists() && path.is_dir() {
+            let dir_entries = fs::read_dir(path)
+                .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+
+            for entry in dir_entries {
+                let entry = entry.map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+                let file_path = entry.path();
+                if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("rego") {
+                    println!("Loading policy: {:?}", file_path);
+                    let path_str = file_path.to_string_lossy().into_owned();
+                    engine.add_policy_from_file(path_str)
+                        .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+                }
+            }
+        } else {
+            return Err(PolicyViolation::RegoEvaluationError(format!("Policy directory does not exist: {}", self.policy_dir)));
+        }
+        
+        self.engine = engine;
+        Ok(())
+    }
+
+    /// Validates a task against security policies using OPA/Rego.
+    fn validate_task(&mut self, task: &Task) -> Result<(), PolicyViolation> {
+        let input_json = json!({
+            "cmd": task.command,
+            "args": task.args,
+            "env_vars": task.env_vars,
+            "os": task.os,
+        });
+
+        let input_val = Value::from_json_str(&input_json.to_string())
+            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+        self.engine.set_input(input_val);
+
+        // Evaluate deny rules for HIPAA
+        let hipaa_res = self.engine.eval_query("data.ucser.hipaa.deny".to_string(), false)
+            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+        self.check_violations(hipaa_res, task)?;
+
+        // Evaluate deny rules for SOC2
+        let soc2_res = self.engine.eval_query("data.ucser.soc2.deny".to_string(), false)
+            .map_err(|e| PolicyViolation::RegoEvaluationError(e.to_string()))?;
+        self.check_violations(soc2_res, task)?;
+
         Ok(())
     }
 }
