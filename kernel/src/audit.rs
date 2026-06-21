@@ -3,7 +3,7 @@ use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
-use sha2::{Sha256, Digest};
+
 use std::collections::HashMap;
 use crate::error::UcserError;
 use crate::traits::AuditBackend;
@@ -29,6 +29,17 @@ impl AuditEngine {
             execution_hashes: HashMap::new(),
         })
     }
+}
+
+const COMPLIANCE_SECRET: &[u8] = b"ucser-compliance-secret-key-2026";
+
+pub fn compute_keyed_hash(secret: &[u8], prev_hash: &str, payload: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(secret);
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(payload.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 impl AuditBackend for AuditEngine {
@@ -58,12 +69,11 @@ impl AuditBackend for AuditEngine {
             });
         }
 
-        // Serialize the JSON specifically for hashing
-        let event_json = serde_json::to_string(&v)?;
+        // Convert payload to key-sorted BTreeMap for canonical serialization
+        let sorted_map: std::collections::BTreeMap<String, Value> = serde_json::from_value(v.clone())?;
+        let event_json = serde_json::to_string(&sorted_map)?;
         
-        let mut hasher = Sha256::new();
-        hasher.update(event_json.as_bytes());
-        let hash_str = hex::encode(hasher.finalize());
+        let hash_str = compute_keyed_hash(COMPLIANCE_SECRET, &prev_hash, &event_json);
 
         // Now append the computed hash onto the final log object
         if let Some(obj) = v.as_object_mut() {
@@ -72,8 +82,9 @@ impl AuditBackend for AuditEngine {
 
         self.execution_hashes.insert(execution_id.to_string(), hash_str);
 
-        // Serialize to final NDJSON format
-        let mut log_entry = serde_json::to_string(&v)?;
+        // Serialize to final NDJSON format using BTreeMap to ensure canonical ordering in storage
+        let sorted_final_map: std::collections::BTreeMap<String, Value> = serde_json::from_value(v)?;
+        let mut log_entry = serde_json::to_string(&sorted_final_map)?;
         log_entry.push('\n');
         
         self.log_file.write_all(log_entry.as_bytes())?;

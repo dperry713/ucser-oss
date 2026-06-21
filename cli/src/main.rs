@@ -113,6 +113,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let file = fs::File::open(audit_file).or_else(|_| fs::File::open(fallback_file))?;
             let reader = BufReader::new(file);
 
+            const COMPLIANCE_SECRET: &[u8] = b"ucser-compliance-secret-key-2026";
+            
+            fn compute_keyed_hash(secret: &[u8], prev_hash: &str, payload: &str) -> String {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(secret);
+                hasher.update(prev_hash.as_bytes());
+                hasher.update(payload.as_bytes());
+                hex::encode(hasher.finalize())
+            }
+
             let mut prev_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
             let mut event_count = 0;
 
@@ -133,16 +144,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(1);
                     }
 
-                    // Remove hash to compute it
+                    // Remove hash to compute the expected hash
                     if let Some(map) = obj.as_object_mut() {
                         map.remove("hash");
                     }
                     
-                    let event_json = serde_json::to_string(&obj)?;
-                    use sha2::{Sha256, Digest};
-                    let mut hasher = Sha256::new();
-                    hasher.update(event_json.as_bytes());
-                    let computed_hash = hex::encode(hasher.finalize());
+                    // Canonicalize JSON via sorted BTreeMap key-ordering
+                    let sorted_map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(obj.clone())?;
+                    let event_json = serde_json::to_string(&sorted_map)?;
+                    
+                    let computed_hash = compute_keyed_hash(COMPLIANCE_SECRET, &prev_hash, &event_json);
 
                     if computed_hash != logged_hash {
                         println!("❌ REPLAY FAILED: Hash mismatch on event! Computed: {} vs Logged: {}", computed_hash, logged_hash);

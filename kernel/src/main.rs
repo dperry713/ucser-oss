@@ -39,38 +39,82 @@ impl Executor for MockExecutor {
 }
 
 struct GrpcExecutor {
-    win_client: Option<AdapterClient>,
-    linux_client: Option<AdapterClient>,
+    kv_store: Option<Arc<tokio::sync::Mutex<ucser_kernel::kv::KvStore>>>,
+    clients: Arc<tokio::sync::Mutex<std::collections::HashMap<String, AdapterClient>>>,
 }
 
 #[async_trait::async_trait]
 impl Executor for GrpcExecutor {
     async fn execute(&self, task: &Task) -> Result<ExecutionResult, UcserError> {
-        let client = if task.os == "windows" {
-            &self.win_client
+        let mut target_address = None;
+
+        // 1. Try to discover node from etcd prefix query
+        if let Some(ref kv_mutex) = self.kv_store {
+            let mut kv = kv_mutex.lock().await;
+            match kv.get_prefix("/nodes/").await {
+                Ok(nodes) => {
+                    for (_key, val_bytes) in nodes {
+                        if let Ok(val_str) = std::str::from_utf8(&val_bytes) {
+                            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(val_str) {
+                                if metadata.get("os").and_then(|v| v.as_str()) == Some(&task.os) {
+                                    if let Some(address) = metadata.get("address").and_then(|v| v.as_str()) {
+                                        target_address = Some(address.to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to fetch nodes from etcd: {}", e);
+                }
+            }
+        }
+
+        // 2. If not found in etcd, fall back to default ports
+        let address = target_address.unwrap_or_else(|| {
+            if task.os == "windows" {
+                "http://[::1]:50051".to_string()
+            } else {
+                "http://[::1]:50052".to_string()
+            }
+        });
+
+        // 3. Resolve or construct gRPC client
+        let mut clients = self.clients.lock().await;
+        let client = if let Some(cached_client) = clients.get(&address) {
+            cached_client.clone()
         } else {
-            &self.linux_client
+            println!("Connecting to adapter endpoint: {}", address);
+            match AdapterClient::connect(&address).await {
+                Ok(c) => {
+                    clients.insert(address.clone(), c.clone());
+                    c
+                }
+                Err(e) => {
+                    return Ok(ExecutionResult {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: format!("Failed to connect to adapter at {}: {}", address, e),
+                    });
+                }
+            }
         };
 
-        if let Some(c) = client {
-            let res = c.dispatch(
-                task.execution_id.clone(),
-                task.command.clone(),
-                task.args.clone(),
-                task.env_vars.clone(),
-            ).await?;
-            Ok(ExecutionResult {
-                exit_code: res.exit_code,
-                stdout: res.stdout,
-                stderr: res.stderr,
-            })
-        } else {
-            Ok(ExecutionResult {
-                exit_code: 1,
-                stdout: String::new(),
-                stderr: format!("No active adapter client connected for OS {}", task.os),
-            })
-        }
+        // 4. Dispatch task
+        let res = client.dispatch(
+            task.execution_id.clone(),
+            task.command.clone(),
+            task.args.clone(),
+            task.env_vars.clone(),
+        ).await?;
+
+        Ok(ExecutionResult {
+            exit_code: res.exit_code,
+            stdout: res.stdout,
+            stderr: res.stderr,
+        })
     }
 }
 
@@ -88,51 +132,15 @@ async fn main() -> Result<(), UcserError> {
     let mut dag = DagEngine::new();
     let mut policy = PolicyEngine::new();
 
-    // Connect to adapters in cluster mode
-    let win_client = if args.single_node {
-        None
-    } else {
-        println!("Connecting to Windows Adapter on port 50051...");
-        match AdapterClient::connect("http://[::1]:50051").await {
-            Ok(c) => Some(c),
-            Err(e) => {
-                println!("Warning: Failed to connect to Windows adapter: {}", e);
-                None
-            }
-        }
-    };
-
-    let linux_client = if args.single_node {
-        None
-    } else {
-        println!("Connecting to Linux Adapter on port 50052...");
-        match AdapterClient::connect("http://[::1]:50052").await {
-            Ok(c) => Some(c),
-            Err(e) => {
-                println!("Warning: Failed to connect to Linux adapter: {}", e);
-                None
-            }
-        }
-    };
-
-    let executor: Arc<dyn Executor> = if args.single_node {
-        Arc::new(MockExecutor)
-    } else {
-        Arc::new(GrpcExecutor {
-            win_client,
-            linux_client,
-        })
-    };
-
     // Distributed Mode: etcd coordination
-    let mut kv = if args.single_node {
+    let kv = if args.single_node {
         None
     } else {
         println!("Connecting to etcd on localhost:2379...");
         match ucser_kernel::kv::KvStore::connect(&["http://127.0.0.1:2379"]).await {
             Ok(k) => {
                 println!("Successfully connected to etcd.");
-                Some(k)
+                Some(Arc::new(tokio::sync::Mutex::new(k)))
             }
             Err(e) => {
                 println!("Warning: etcd not available, running without distributed coordination: {}", e);
@@ -141,13 +149,18 @@ async fn main() -> Result<(), UcserError> {
         }
     };
 
-    if let Some(ref mut store) = kv {
+    if let Some(ref kv_mutex) = kv {
+        let mut store = kv_mutex.lock().await;
         let node_id = "node-1";
         if let Err(e) = store.put(format!("/nodes/{}", node_id), "active").await {
             println!("Warning: Failed to register node in etcd: {}", e);
         } else {
             println!("Registered node {} in etcd.", node_id);
         }
+
+        // Register worker node adapters dynamically in etcd
+        let _ = store.put("/nodes/windows-node-1", r#"{"os":"windows","address":"http://[::1]:50051"}"#).await;
+        let _ = store.put("/nodes/linux-node-1", r#"{"os":"linux","address":"http://[::1]:50052"}"#).await;
         
         match store.get("/leader").await {
             Ok(Some(leader)) => {
@@ -167,6 +180,15 @@ async fn main() -> Result<(), UcserError> {
             }
         }
     }
+
+    let executor: Arc<dyn Executor> = if args.single_node {
+        Arc::new(MockExecutor)
+    } else {
+        Arc::new(GrpcExecutor {
+            kv_store: kv.clone(),
+            clients: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        })
+    };
 
     // Set up scheduler communication channel
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<SchedulerEvent>(100);

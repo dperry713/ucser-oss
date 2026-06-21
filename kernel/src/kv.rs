@@ -27,6 +27,19 @@ impl KvStore {
         }
     }
 
+    /// Retrieves all keys and values matching a prefix from the KV store.
+    pub async fn get_prefix(&mut self, prefix: impl Into<Vec<u8>>) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let options = etcd_client::GetOptions::new().with_prefix();
+        let response = self.client.get(prefix, Some(options)).await?;
+        let mut results = Vec::new();
+        for kv in response.kvs() {
+            if let Ok(key_str) = std::str::from_utf8(kv.key()) {
+                results.push((key_str.to_string(), kv.value().to_vec()));
+            }
+        }
+        Ok(results)
+    }
+
     /// Deletes a key from the KV store.
     pub async fn delete(&mut self, key: impl Into<Vec<u8>>) -> Result<(), Error> {
         self.client.delete(key, None).await?;
